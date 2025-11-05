@@ -1,0 +1,95 @@
+import requests
+import binascii
+
+def get_addresses_from_txid(txid):
+    """
+    Fetches transaction data from Blockstream API and extracts input/output addresses.
+    
+    Args:
+        txid (str): The Bitcoin transaction ID (hex string).
+    
+    Returns:
+        dict: {'inputs': [input_addresses], 'outputs': [output_addresses]}
+              Returns {'error': status_code} on failure.
+    """
+    url = f"https://blockstream.info/api/tx/{txid}"
+    response = requests.get(url)
+    if response.status_code != 200:
+        return {'error': response.status_code}
+    
+    tx_data = response.json()
+    
+    # Extract input addresses (from prevout scriptPubKey)
+    inputs = []
+    for vin in tx_data['vin']:
+        if 'prevout' in vin and 'scriptpubkey' in vin['prevout']:
+            script_hex = vin['prevout']['scriptpubkey']
+            addr = decode_script_to_address(script_hex)
+            if addr:
+                inputs.append(addr)
+    
+    # Extract output addresses
+    outputs = []
+    for vout in tx_data['vout']:
+        script_hex = vout['scriptpubkey']
+        addr = decode_script_to_address(script_hex)
+        if addr:
+            outputs.append(addr)
+    
+    return {'inputs': inputs, 'outputs': outputs}
+
+def decode_script_to_address(script_hex):
+    """
+    Decodes a scriptPubKey hex to a Bitcoin address (supports P2PKH and P2SH).
+    
+    Args:
+        script_hex (str): Hex-encoded scriptPubKey.
+    
+    Returns:
+        str: Decoded address or None if unsupported type.
+    """
+    if script_hex.startswith('76a914'):  # P2PKH: OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
+        pubkey_hash = script_hex[6:-4]  # Extract 20-byte hash
+        # Base58Check encode: version 0x00 + hash + checksum
+        versioned_payload = '00' + pubkey_hash
+        payload_bytes = binascii.unhexlify(versioned_payload)
+        checksum = binascii.hexdigest(binascii.unhexlify(versioned_payload))[:8]
+        full_hex = versioned_payload + checksum
+        addr = base58_encode(binascii.unhexlify(full_hex))
+        return addr
+    elif script_hex.startswith('a914'):  # P2SH: OP_HASH160 <scriptHash> OP_EQUAL
+        script_hash = script_hex[4:-2]  # Extract 20-byte hash
+        # Base58Check encode: version 0x05 + hash + checksum
+        versioned_payload = '05' + script_hash
+        payload_bytes = binascii.unhexlify(versioned_payload)
+        checksum = binascii.hexdigest(binascii.unhexlify(versioned_payload))[:8]
+        full_hex = versioned_payload + checksum
+        addr = base58_encode(binascii.unhexlify(full_hex))
+        return addr
+    else:
+        # Unsupported type (e.g., Bech32, bare multisig)
+        return None
+
+def base58_encode(data):
+    """
+    Simple Base58 encoder for Bitcoin addresses.
+    """
+    alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+    num = int.from_bytes(data, 'big')
+    encoded = ''
+    while num > 0:
+        num, rem = divmod(num, 58)
+        encoded = alphabet[rem] + encoded
+    # Leading zeros
+    for byte in data:
+        if byte == 0:
+            encoded = '1' + encoded
+        else:
+            break
+    return encoded
+
+# Example usage
+if __name__ == "__main__":
+    txid = "f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16"  # Genesis transaction
+    result = get_addresses_from_txid(txid)
+    print(result)
